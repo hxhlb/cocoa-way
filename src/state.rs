@@ -256,7 +256,6 @@ impl XdgShellHandler for AppState {
     fn maximize_request(&mut self, surface: smithay::wayland::shell::xdg::ToplevelSurface) {
         println!("*** HIT MAXIMIZE REQUEST ***");
         log::info!("Maximize Request: {:?}", surface.wl_surface().id());
-        let current_mode = self.output.current_mode().unwrap();
         log::info!(
             "DEBUG MAXIMIZE: self.width={}, self.height={}, self.scale_factor={}",
             self.width,

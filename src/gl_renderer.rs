@@ -129,12 +129,12 @@ impl GlRenderer {
             .make_current(&gl_surface)
             .map_err(|e| format!("Failed to make current: {:?}", e))?;
         gl::load_with(|symbol| {
-            let symbol = std::ffi::CString::new(symbol).unwrap();
+            let symbol = std::ffi::CString::new(symbol).expect("OpenGL symbol name contains null byte");
             gl_display.get_proc_address(symbol.as_c_str()).cast()
         });
         let version = unsafe { CStr::from_ptr(gl::GetString(gl::VERSION) as *const _).to_string_lossy() };
         log::info!("OpenGL Version: {}", version);
-        if let Err(e) = gl_surface.set_swap_interval(&gl_context, SwapInterval::Wait(NonZeroU32::new(1).unwrap())) {
+        if let Err(e) = gl_surface.set_swap_interval(&gl_context, SwapInterval::Wait(unsafe { NonZeroU32::new_unchecked(1) })) {
             log::warn!("Error setting vsync: {:?}", e);
         }
         let shader_program = unsafe { Self::compile_program(VERTEX_SHADER_SOURCE, FRAGMENT_SHADER_SOURCE)? };
@@ -158,7 +158,7 @@ impl GlRenderer {
     unsafe fn compile_program(vertex_source: &str, fragment_source: &str) -> Result<u32, String> {
         let mut success = 0;
         let vertex_shader = gl::CreateShader(gl::VERTEX_SHADER);
-        let c_str = CString::new(vertex_source).unwrap();
+        let c_str = CString::new(vertex_source).map_err(|e| format!("Failed to create CString: {}", e))?;
         gl::ShaderSource(vertex_shader, 1, &c_str.as_ptr(), ptr::null());
         gl::CompileShader(vertex_shader);
         gl::GetShaderiv(vertex_shader, gl::COMPILE_STATUS, &mut success);
@@ -168,7 +168,7 @@ impl GlRenderer {
             return Err(format!("Vertex shader compilation failed: {}", String::from_utf8_lossy(&log)));
         }
         let fragment_shader = gl::CreateShader(gl::FRAGMENT_SHADER);
-        let c_str = CString::new(fragment_source).unwrap();
+        let c_str = CString::new(fragment_source).map_err(|e| format!("Failed to create CString: {}", e))?;
         gl::ShaderSource(fragment_shader, 1, &c_str.as_ptr(), ptr::null());
         gl::CompileShader(fragment_shader);
         gl::GetShaderiv(fragment_shader, gl::COMPILE_STATUS, &mut success);
@@ -222,10 +222,11 @@ impl GlRenderer {
         if width > 0 && height > 0 {
             self.width = width;
             self.height = height;
+            // Safety: We've checked that width > 0 and height > 0 above
             self.gl_surface.resize(
                 &self.gl_context,
-                NonZeroU32::new(width).unwrap(),
-                NonZeroU32::new(height).unwrap(),
+                unsafe { NonZeroU32::new_unchecked(width) },
+                unsafe { NonZeroU32::new_unchecked(height) },
             );
             unsafe {
                 gl::Viewport(0, 0, width as i32, height as i32);
