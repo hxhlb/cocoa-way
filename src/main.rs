@@ -2,7 +2,6 @@ use log::info;
 use std::sync::Arc;
 use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::keyboard::PhysicalKey;
 use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_server::Resource;
@@ -207,9 +206,7 @@ fn main() {
                     WindowEvent::CloseRequested => target.exit(),
                     WindowEvent::KeyboardInput { event: KeyEvent { state: el_state, physical_key, .. }, .. } => {
                         if let winit::keyboard::PhysicalKey::Code(key_code) = physical_key {
-                            use winit::keyboard::KeyCode;
                             match key_code {
-                                KeyCode::Escape => target.exit(),
                                 _ => {
                                      use smithay::backend::input::KeyState;
                                      use smithay::input::keyboard::Keycode;  
