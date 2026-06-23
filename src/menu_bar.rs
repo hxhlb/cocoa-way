@@ -169,6 +169,7 @@ unsafe fn show_quick_connect_dialog() {
                 socket:    None,
                 app:       if prog_str.is_empty() { None } else { Some(prog_str) },
                 password:  if pass_str.is_empty() { None } else { Some(pass_str) },
+                waypipe_path: None,
             };
             let rt   = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
             let disp = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
