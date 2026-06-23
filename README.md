@@ -22,7 +22,7 @@
 
 [![Demo Video](https://img.youtube.com/vi/VS3vQp5i8YQ/0.jpg)](https://youtu.be/VS3vQp5i8YQ)
 
-> *True protocol portability: Cocoa-Way rendering Linux apps from OrbStack via Unix sockets.*
+> *True protocol portability: Cocoa-Way rendering Linux apps from SSH hosts, Docker, OrbStack, and Apple Container.*
 
 ## Features
 
@@ -78,6 +78,31 @@ cargo build --release
    ./run_waypipe.sh ssh user@linux-host firefox
    ```
 
+3. **Or add persistent connections in `~/.config/cocoa-way/connections.toml`:**
+
+   ```toml
+   [[connection]]
+   name = "Ubuntu (Apple Container)"
+   type = "container"
+   container_runtime = "container"
+   image = "docker.io/library/ubuntu:24.04"
+   app = "weston-terminal"
+   container_socket = "/tmp/cocoa-way/waypipe.sock"
+   runtime_args = ["--rosetta"]
+   ```
+
+   Then use the menu bar inside Cocoa-Way to launch the connection.
+
+### Container Runtimes
+
+Cocoa-Way can now launch local container-backed apps through connection entries with `type = "container"`.
+
+- `container_runtime = "container"` uses Apple's official [`container`](https://github.com/apple/container) CLI. Apple documents it as requiring Apple silicon and macOS 26+, and you must start its background service first with `container system start`.
+- `container_runtime = "docker"` works with Docker Desktop and compatible CLIs.
+- `container_runtime = "orb"` or `container_runtime = "orbstack"` works with OrbStack.
+
+For Apple Container, Cocoa-Way uses `container run --publish-socket ...` so the waypipe socket is exported back to macOS without requiring a shared bind mount. For Docker and OrbStack, Cocoa-Way bind-mounts the host socket directory into the container and connects over that local socket.
+
 ## Architecture
 
 ```mermaid
@@ -128,6 +153,29 @@ If running manually:
 ```bash
 waypipe ssh -o StreamLocalBindUnlink=yes user@host ...
 ```
+
+</details>
+
+<details>
+<summary><b>Apple Container support checklist</b></summary>
+
+```bash
+container system start
+container run --rm -it ubuntu:24.04 /bin/bash
+```
+
+If Cocoa-Way cannot launch a configured Apple Container connection:
+
+- Verify the `container` CLI is installed and available in `/usr/local/bin/container` or your `PATH`.
+- Make sure the image contains `waypipe` and the app you configured in `app = "..."`.
+- On first run, try a shell as the app command to confirm the image itself starts cleanly.
+
+</details>
+
+<details>
+<summary><b>Can Cocoa-Way run local X11 apps directly?</b></summary>
+
+Not yet. Cocoa-Way is focused on Wayland clients transported over waypipe. Running same-machine X11 apps as a full XQuartz replacement is still an open gap.
 
 </details>
 

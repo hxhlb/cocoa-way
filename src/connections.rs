@@ -2,12 +2,13 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Connection {
     pub name: String,
     #[serde(rename = "type", default = "default_type")]
-    pub conn_type: String, // "ssh" or "local"
+    pub conn_type: String, // "ssh", "local", or "container"
     pub host: Option<String>,
     pub user: Option<String>,
     pub port: Option<u16>,
@@ -16,6 +17,11 @@ pub struct Connection {
     pub app: Option<String>,    // program to launch on remote
     pub password: Option<String>,
     pub waypipe_path: Option<String>,
+    pub image: Option<String>, // for conn_type = "container"
+    pub container_runtime: Option<String>,
+    pub container_socket: Option<String>,
+    #[serde(default)]
+    pub runtime_args: Vec<String>,
 }
 
 fn default_type() -> String {
@@ -51,6 +57,24 @@ pub fn load_connections() -> Vec<Connection> {
 # name = "Linux VM"
 # type = "local"
 # socket = "/tmp/waypipe-vm.sock"
+# app = "weston-terminal"
+
+# --- Apple Container example ---
+# [[connection]]
+# name = "Ubuntu (Apple Container)"
+# type = "container"
+# container_runtime = "container"
+# image = "docker.io/library/ubuntu:24.04"
+# app = "weston-terminal"
+# container_socket = "/tmp/cocoa-way/waypipe.sock"
+# runtime_args = ["--rosetta"]
+
+# --- Docker / OrbStack example ---
+# [[connection]]
+# name = "Fedora (Docker)"
+# type = "container"
+# container_runtime = "docker"
+# image = "ghcr.io/waycrate/waypipe:latest"
 # app = "weston-terminal"
 
 # --- Remote SSH example ---
@@ -96,15 +120,9 @@ pub fn spawn_waypipe(conn: &Connection, runtime_dir: &str, display: &str) -> Opt
         "local" => {
             // Local VM reachable through a Unix socket (e.g. OrbStack / QEMU)
             let socket = conn.socket.as_deref()?;
-            Command::new(&waypipe)
-                .env("PATH", &child_path)
-                .env("XDG_RUNTIME_DIR", runtime_dir)
-                .env("WAYLAND_DISPLAY", display)
-                .args(["--socket", socket, "client"])
-                .spawn()
-                .map_err(|e| log::error!("Failed to spawn waypipe (local): {}", e))
-                .ok()
+            spawn_local_waypipe_client(&waypipe, &child_path, runtime_dir, display, socket)
         }
+        "container" => spawn_container_waypipe(conn, runtime_dir, display, &waypipe, &child_path),
         _ => {
             // SSH connection
             let host = conn.host.as_deref()?;
@@ -144,7 +162,199 @@ pub fn spawn_waypipe(conn: &Connection, runtime_dir: &str, display: &str) -> Opt
     }
 }
 
+fn spawn_local_waypipe_client(
+    waypipe: &Path,
+    child_path: &str,
+    runtime_dir: &str,
+    display: &str,
+    socket: &str,
+) -> Option<Child> {
+    Command::new(waypipe)
+        .env("PATH", child_path)
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .env("WAYLAND_DISPLAY", display)
+        .args(["--socket", socket, "client"])
+        .spawn()
+        .map_err(|e| log::error!("Failed to spawn waypipe (local): {}", e))
+        .ok()
+}
+
+fn spawn_container_waypipe(
+    conn: &Connection,
+    runtime_dir: &str,
+    display: &str,
+    waypipe: &Path,
+    child_path: &str,
+) -> Option<Child> {
+    let runtime = conn.container_runtime.as_deref().unwrap_or("container");
+    let runtime_kind = normalize_container_runtime(runtime);
+    let runtime_binary = resolve_command_path(
+        runtime_binary_name(runtime),
+        None,
+        runtime_binary_name(runtime),
+        child_path,
+    )?;
+    let image = conn.image.as_deref()?;
+    let host_socket = conn
+        .socket
+        .clone()
+        .unwrap_or_else(|| default_container_socket(runtime_dir, &conn.name));
+    let container_socket = conn
+        .container_socket
+        .clone()
+        .unwrap_or_else(|| default_container_socket_path(&host_socket, runtime_kind));
+    let app = conn.app.as_deref().unwrap_or("weston-terminal");
+
+    prepare_host_socket(&host_socket)?;
+
+    let server_command = build_container_server_command(&container_socket, app);
+    let mut cmd = Command::new(&runtime_binary);
+    cmd.env("PATH", child_path);
+
+    match runtime_kind {
+        ContainerRuntime::Apple => {
+            cmd.arg("run").arg("--rm");
+            for arg in &conn.runtime_args {
+                cmd.arg(arg);
+            }
+            cmd.arg("--publish-socket")
+                .arg(format!("{}:{}", host_socket, container_socket))
+                .arg(image)
+                .args(["sh", "-lc", &server_command]);
+        }
+        ContainerRuntime::Docker | ContainerRuntime::OrbStack => {
+            let socket_parent = Path::new(&host_socket).parent()?;
+            cmd.arg("run").arg("--rm");
+            for arg in &conn.runtime_args {
+                cmd.arg(arg);
+            }
+            cmd.arg("-v")
+                .arg(format!(
+                    "{}:{}",
+                    socket_parent.display(),
+                    socket_parent.display()
+                ))
+                .arg(image)
+                .args(["sh", "-lc", &server_command]);
+        }
+    }
+
+    let mut container_child = cmd
+        .spawn()
+        .map_err(|e| log::error!("Failed to start {} container: {}", runtime, e))
+        .ok()?;
+
+    if !wait_for_socket(&host_socket, Duration::from_secs(8)) {
+        let _ = container_child.kill();
+        log::error!(
+            "Timed out waiting for waypipe socket at {} from {} container",
+            host_socket,
+            runtime
+        );
+        return None;
+    }
+
+    spawn_local_waypipe_client(waypipe, child_path, runtime_dir, display, &host_socket)
+}
+
+#[derive(Clone, Copy)]
+enum ContainerRuntime {
+    Apple,
+    Docker,
+    OrbStack,
+}
+
+fn normalize_container_runtime(runtime: &str) -> ContainerRuntime {
+    match runtime {
+        "docker" => ContainerRuntime::Docker,
+        "orb" | "orbstack" => ContainerRuntime::OrbStack,
+        _ => ContainerRuntime::Apple,
+    }
+}
+
+fn runtime_binary_name(runtime: &str) -> &str {
+    match runtime {
+        "docker" => "docker",
+        "orb" | "orbstack" => "orb",
+        _ => "container",
+    }
+}
+
+fn default_container_socket(runtime_dir: &str, name: &str) -> String {
+    let mut slug = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if slug.chars().last() != Some('-') {
+            slug.push('-');
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        slug.push_str("container");
+    }
+    Path::new(runtime_dir)
+        .join(format!("{}.sock", slug))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn default_container_socket_path(host_socket: &str, runtime: ContainerRuntime) -> String {
+    match runtime {
+        ContainerRuntime::Apple => "/tmp/cocoa-way/waypipe.sock".into(),
+        ContainerRuntime::Docker | ContainerRuntime::OrbStack => host_socket.into(),
+    }
+}
+
+fn prepare_host_socket(host_socket: &str) -> Option<()> {
+    let parent = Path::new(host_socket).parent()?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| {
+            log::error!(
+                "Failed to create socket directory {}: {}",
+                parent.display(),
+                e
+            )
+        })
+        .ok()?;
+    let _ = std::fs::remove_file(host_socket);
+    Some(())
+}
+
+fn build_container_server_command(container_socket: &str, app: &str) -> String {
+    let container_socket = shell_single_quote(container_socket);
+    let app = shell_single_quote(app);
+    format!(
+        "mkdir -p $(dirname {socket}) && exec waypipe --socket {socket} server sh -lc {app}",
+        socket = container_socket,
+        app = app,
+    )
+}
+
+fn wait_for_socket(host_socket: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if Path::new(host_socket).exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
 fn resolve_waypipe_path(configured: Option<&str>) -> Option<PathBuf> {
+    let child_path = build_child_path();
+    resolve_command_path("waypipe", configured, "waypipe", &child_path)
+}
+
+fn resolve_command_path(
+    name: &str,
+    configured: Option<&str>,
+    display_name: &str,
+    child_path: &str,
+) -> Option<PathBuf> {
     if let Some(path) = configured.filter(|path| !path.trim().is_empty()) {
         let path = expand_home(path.trim());
         if is_executable_file(&path) {
@@ -152,7 +362,8 @@ fn resolve_waypipe_path(configured: Option<&str>) -> Option<PathBuf> {
         }
 
         log::error!(
-            "Configured waypipe_path does not point to an executable file: {:?}",
+            "Configured path for {} does not point to an executable file: {:?}",
+            display_name,
             path
         );
         return None;
@@ -160,19 +371,17 @@ fn resolve_waypipe_path(configured: Option<&str>) -> Option<PathBuf> {
 
     let mut searched = Vec::new();
 
-    if let Some(path) = find_executable_in_path("waypipe", &std::env::var_os("PATH"), &mut searched)
-    {
+    if let Some(path) = find_executable_in_path(name, &std::env::var_os("PATH"), &mut searched) {
         return Some(path);
     }
 
-    let child_path = build_child_path();
-    if let Some(path) = find_executable_in_path("waypipe", &Some(child_path.into()), &mut searched)
-    {
+    if let Some(path) = find_executable_in_path(name, &Some(child_path.into()), &mut searched) {
         return Some(path);
     }
 
     log::error!(
-        "Failed to find waypipe. Searched: {}. Set waypipe_path in ~/.config/cocoa-way/connections.toml if it is installed elsewhere.",
+        "Failed to find {}. Searched: {}.",
+        display_name,
         searched
             .iter()
             .map(|path| path.display().to_string())
@@ -219,6 +428,8 @@ fn build_child_path() -> String {
         "/opt/homebrew/sbin",
         "/usr/local/bin",
         "/usr/local/sbin",
+        "/opt/orbstack/bin",
+        "/Applications/Docker.app/Contents/Resources/bin",
         "/opt/local/bin",
         "/opt/local/sbin",
         "/nix/var/nix/profiles/default/bin",
@@ -251,6 +462,10 @@ fn expand_home(path: &str) -> PathBuf {
     }
 
     PathBuf::from(path)
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn is_executable_file(path: &Path) -> bool {

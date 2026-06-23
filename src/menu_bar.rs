@@ -15,7 +15,7 @@ use objc2::declare_class;
 use objc2::mutability::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
-use objc2::{msg_send, msg_send_id, sel, ClassType, DeclaredClass};
+use objc2::{ClassType, DeclaredClass, msg_send, msg_send_id, sel};
 use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
 use objc2_foundation::{MainThreadMarker, NSRect, NSString};
 
@@ -77,18 +77,24 @@ declare_class!(
 /// Shows an NSAlert with two text fields: user@host and program.
 /// Blocks until dismissed. On "Connect", spawns waypipe.
 unsafe fn show_quick_connect_dialog() {
-    use objc2_app_kit::{NSAlert, NSTextField, NSSecureTextField, NSView};
+    use objc2_app_kit::{NSAlert, NSSecureTextField, NSTextField, NSView};
     use objc2_foundation::NSRect;
 
     let alert: Retained<NSAlert> = msg_send_id![NSAlert::class(), new];
-    let _: () = msg_send![&*alert, setMessageText: &*NSString::from_str("Connect to Remote Machine")];
+    let _: () =
+        msg_send![&*alert, setMessageText: &*NSString::from_str("Connect to Remote Machine")];
     let _: () = msg_send![&*alert, setInformativeText:
         &*NSString::from_str("Enter the SSH host and the Wayland app to launch.")];
 
     // Accessory view: 300×116 containing three text fields (host / password / app)
     // NSView origin is bottom-left, so y increases upward.
-    let frame = NSRect { origin: objc2_foundation::NSPoint { x: 0.0, y: 0.0 },
-                          size:   objc2_foundation::NSSize  { width: 300.0, height: 116.0 } };
+    let frame = NSRect {
+        origin: objc2_foundation::NSPoint { x: 0.0, y: 0.0 },
+        size: objc2_foundation::NSSize {
+            width: 300.0,
+            height: 116.0,
+        },
+    };
     let view: Retained<NSView> = msg_send_id![
         msg_send_id![NSView::class(), alloc],
         initWithFrame: frame
@@ -97,7 +103,10 @@ unsafe fn show_quick_connect_dialog() {
     // Top field: user@host
     let host_frame = NSRect {
         origin: objc2_foundation::NSPoint { x: 0.0, y: 80.0 },
-        size:   objc2_foundation::NSSize  { width: 300.0, height: 28.0 },
+        size: objc2_foundation::NSSize {
+            width: 300.0,
+            height: 28.0,
+        },
     };
     let host_field: Retained<NSTextField> = msg_send_id![
         msg_send_id![NSTextField::class(), alloc],
@@ -109,7 +118,10 @@ unsafe fn show_quick_connect_dialog() {
     // Middle field: password (masked)
     let pass_frame = NSRect {
         origin: objc2_foundation::NSPoint { x: 0.0, y: 44.0 },
-        size:   objc2_foundation::NSSize  { width: 300.0, height: 28.0 },
+        size: objc2_foundation::NSSize {
+            width: 300.0,
+            height: 28.0,
+        },
     };
     let pass_field: Retained<NSSecureTextField> = msg_send_id![
         msg_send_id![NSSecureTextField::class(), alloc],
@@ -121,7 +133,10 @@ unsafe fn show_quick_connect_dialog() {
     // Bottom field: app to launch
     let prog_frame = NSRect {
         origin: objc2_foundation::NSPoint { x: 0.0, y: 8.0 },
-        size:   objc2_foundation::NSSize  { width: 300.0, height: 28.0 },
+        size: objc2_foundation::NSSize {
+            width: 300.0,
+            height: 28.0,
+        },
     };
     let prog_field: Retained<NSTextField> = msg_send_id![
         msg_send_id![NSTextField::class(), alloc],
@@ -154,24 +169,39 @@ unsafe fn show_quick_connect_dialog() {
         let prog_str = prog_ns.to_string();
         if !host_str.is_empty() {
             let (user, host_addr) = if let Some(idx) = host_str.find('@') {
-                (Some(host_str[..idx].to_string()), host_str[idx+1..].to_string())
+                (
+                    Some(host_str[..idx].to_string()),
+                    host_str[idx + 1..].to_string(),
+                )
             } else {
                 (None, host_str.clone())
             };
             log::info!("Quick-connect: {} app={}", host_str, prog_str);
             let conn = crate::connections::Connection {
-                name:      host_str,
+                name: host_str,
                 conn_type: "ssh".to_string(),
-                host:      Some(host_addr),
+                host: Some(host_addr),
                 user,
-                port:      None,
-                identity:  None,
-                socket:    None,
-                app:       if prog_str.is_empty() { None } else { Some(prog_str) },
-                password:  if pass_str.is_empty() { None } else { Some(pass_str) },
+                port: None,
+                identity: None,
+                socket: None,
+                app: if prog_str.is_empty() {
+                    None
+                } else {
+                    Some(prog_str)
+                },
+                password: if pass_str.is_empty() {
+                    None
+                } else {
+                    Some(pass_str)
+                },
                 waypipe_path: None,
+                image: None,
+                container_runtime: None,
+                container_socket: None,
+                runtime_args: vec![],
             };
-            let rt   = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+            let rt = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
             let disp = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
             crate::connections::spawn_waypipe(&conn, &rt, &disp);
         }
@@ -203,7 +233,7 @@ pub fn setup_menu(
     unsafe {
         let handler: Retained<MenuHandler> = msg_send_id![MenuHandler::class(), new];
 
-        let app  = NSApplication::sharedApplication(mtm);
+        let app = NSApplication::sharedApplication(mtm);
         let root = NSMenu::new(mtm);
 
         // ── 1. App menu ("Cocoa-Way") ─────────────────────────────────────────
@@ -221,10 +251,8 @@ pub fn setup_menu(
 
         // ── 2. Connections menu ───────────────────────────────────────────────
         let conn_item = label_item("Connections", mtm);
-        let conn_menu = NSMenu::initWithTitle(
-            mtm.alloc::<NSMenu>(),
-            &NSString::from_str("Connections"),
-        );
+        let conn_menu =
+            NSMenu::initWithTitle(mtm.alloc::<NSMenu>(), &NSString::from_str("Connections"));
 
         // "Connect to Machine…" dialog item (always present)
         let quick = NSMenuItem::initWithTitle_action_keyEquivalent(
@@ -260,17 +288,14 @@ pub fn setup_menu(
 
         // ── 3. View menu ──────────────────────────────────────────────────────
         let view_item = label_item("View", mtm);
-        let view_menu = NSMenu::initWithTitle(
-            mtm.alloc::<NSMenu>(),
-            &NSString::from_str("View"),
-        );
+        let view_menu = NSMenu::initWithTitle(mtm.alloc::<NSMenu>(), &NSString::from_str("View"));
         let hidpi = NSMenuItem::initWithTitle_action_keyEquivalent(
             mtm.alloc::<NSMenuItem>(),
             &NSString::from_str("HiDPI Display"),
             Some(sel!(toggleHiDpi:)),
             &NSString::from_str(""),
         );
-        let _: () = msg_send![&*hidpi, setState: 0isize];  // unchecked: Normal 1x is default
+        let _: () = msg_send![&*hidpi, setState: 0isize]; // unchecked: Normal 1x is default
         let _: () = msg_send![&*hidpi, setTarget: &*handler];
         view_menu.addItem(&hidpi);
         view_item.setSubmenu(Some(&view_menu));
@@ -284,7 +309,9 @@ pub fn setup_menu(
 /// Disable macOS window tab bar (removes "Show Tab Bar" from the View menu).
 /// Call this once after the winit window is created.
 pub fn disable_window_tabbing(ns_window_ptr: *mut std::ffi::c_void) {
-    if ns_window_ptr.is_null() { return; }
+    if ns_window_ptr.is_null() {
+        return;
+    }
     unsafe {
         let win = ns_window_ptr as *mut AnyObject;
         // NSWindowTabbingModeDisallowed = 2
