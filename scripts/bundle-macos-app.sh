@@ -17,9 +17,7 @@ fi
 
 mkdir -p "${FRAMEWORKS_DIR}"
 
-declare -A QUEUED=()
 QUEUE=("${MAIN_BIN}")
-QUEUED["${MAIN_BIN}"]=1
 
 is_bundle_candidate() {
     case "$1" in
@@ -41,11 +39,15 @@ add_rpath_if_needed() {
 
 queue_file() {
     local file=$1
+    local queued
 
-    if [[ -z "${QUEUED["${file}"]+x}" ]]; then
-        QUEUE+=("${file}")
-        QUEUED["${file}"]=1
-    fi
+    for queued in "${QUEUE[@]}"; do
+        if [[ "${queued}" == "${file}" ]]; then
+            return
+        fi
+    done
+
+    QUEUE+=("${file}")
 }
 
 copy_and_rewrite_dependency() {
